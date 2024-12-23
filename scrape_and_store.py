@@ -1,16 +1,16 @@
 import os
-import random
 import math
-import psycopg2
-from psycopg2.extras import execute_values
-from jobspy import scrape_jobs
-from datetime import datetime
+import random
 import string
 import re
+from datetime import datetime
 
-# ---------------------------------
-# PROXIES & USER-AGENTS
-# ---------------------------------
+import psycopg2
+from psycopg2.extras import execute_values
+
+##############################
+#  PROXIES & USER-AGENTS
+##############################
 PROXIES = [
     "185.253.122.217:6026",
     "103.130.178.80:5744",
@@ -64,11 +64,9 @@ PROXIES = [
 ]
 
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/89.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/95.0.4638.69 Safari/537.36"
     # ... add more if you want
 ]
 
@@ -78,11 +76,9 @@ def get_random_proxy():
 def get_random_user_agent():
     return random.choice(USER_AGENTS)
 
-# ---------------------------------
-# POSTGRES SETTINGS
-# ---------------------------------
-import psycopg2
-
+##############################
+#   POSTGRES CONFIG
+##############################
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "db")
 POSTGRES_DB   = os.getenv("POSTGRES_DB", "job_db")
 POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
@@ -99,53 +95,22 @@ def get_postgres_connection():
     )
     return conn
 
-# ---------------------------------
-# SCRAPER CONFIG
-# ---------------------------------
-# Remove "google" to avoid 429 from Google.
-SITE_LIST = ["indeed", "linkedin", "zip_recruiter", "glassdoor"] 
+##############################
+#  SCRAPER SETTINGS
+##############################
+
+# >>> IMPORTANT: If you want to omit Google due to timeouts/429, REMOVE "google" <<<
+SITE_LIST = ["indeed", "linkedin", "zip_recruiter", "glassdoor"]
 LOCATION = "USA"
 RESULTS_WANTED = 20
 HOURS_OLD = 72
 
-# For date_posted or other columns that might be float/NaN, we'll do a safe cast.
-def safe_timestamp(val):
-    """
-    Attempt to cast val to a valid timestamp. 
-    If val is float, NaN, or otherwise invalid, return None.
-    """
-    if val is None:
-        return None
-
-    # If it's already a datetime, just return it
-    if isinstance(val, datetime):
-        return val
-
-    # If it's a float or int, likely invalid for a timestamp
-    if isinstance(val, (float, int)):
-        # check if it's NaN
-        if isinstance(val, float) and math.isnan(val):
-            return None
-        # if it's a numeric epoch, you could convert like datetime.utcfromtimestamp(val)
-        # but jobspy typically doesn't return epochs, so let's just treat it as None
-        return None
-
-    # If it's a string, attempt to parse
-    if isinstance(val, str):
-        val = val.strip()
-        if not val:
-            return None
-        # optional: parse with dateutil or datetime
-        try:
-            # A naive approach; you might need dateutil for advanced formats
-            return datetime.fromisoformat(val)
-        except:
-            # fallback
-            return None
-
-    return None
+##############################
+#  DATA CLEANING FUNCTIONS
+##############################
 
 def normalize_title(title: str) -> str:
+    """Make job title lowercase, remove punctuation, etc."""
     if not title:
         return ""
     title = title.lower()
@@ -153,35 +118,76 @@ def normalize_title(title: str) -> str:
     title = re.sub(r'\s+', ' ', title).strip()
     return title
 
-def clean_company_name(val):
+def safe_timestamp(val):
     """
-    Sometimes JobSpy might return a float (NaN) for company.
-    Convert any non-string or NaN to None.
+    Convert the value to a valid datetime or return None.
+    Some sites return 'NaN' or floats for date_posted.
     """
     if val is None:
         return None
-    # If it's a string already
-    if isinstance(val, str):
-        if val.strip().lower() in ["nan", ""]:
-            return None
-        return val.strip()
 
-    # If it's numeric or float
+    # if it's already datetime
+    if isinstance(val, datetime):
+        return val
+
+    # if it's float or int
     if isinstance(val, (float, int)):
-        # check if it's NaN
+        # e.g. 'NaN' or numeric epoch -> treat as None
         if isinstance(val, float) and math.isnan(val):
             return None
-        # else convert to string, or just None
+        # If you want to convert numeric epoch -> datetime, do that. Otherwise None:
+        return None
+
+    # if it's string
+    if isinstance(val, str):
+        val = val.strip()
+        if not val:
+            return None
+        # Attempt ISO parse
+        try:
+            return datetime.fromisoformat(val)
+        except:
+            # e.g. "NaN" or unknown format
+            return None
+
+    # fallback
+    return None
+
+def clean_company_name(val):
+    """
+    Convert numeric or NaN company names to None or a safe string.
+    This ensures we never pass floats to the WHERE clause for company_name.
+    """
+    if val is None:
+        return None
+
+    if isinstance(val, str):
+        # handle 'NaN' or empty
+        v = val.strip()
+        if v.lower() == "nan" or v == "":
+            return None
+        return v
+
+    if isinstance(val, (float, int)):
+        # if it's float and is NaN
+        if isinstance(val, float) and math.isnan(val):
+            return None
+        # else we can cast to string or just discard
         return str(val)
 
     return None
 
+##############################
+#  MAIN SCRAPER LOGIC
+##############################
 def scrape_and_store():
+    from jobspy import scrape_jobs
+
     conn = get_postgres_connection()
     conn.autocommit = True
     cursor = conn.cursor()
 
-    # 1) Fetch active keywords from DB
+    # 1) Fetch active keywords from the DB
     cursor.execute("SELECT name FROM keywords WHERE is_active = TRUE;")
     keywords = [row[0] for row in cursor.fetchall()]
     print(f"Active Keywords in DB: {keywords}")
@@ -189,15 +195,13 @@ def scrape_and_store():
     for keyword in keywords:
         print(f"\nScraping for keyword: {keyword}")
 
+        # rotate proxy + user-agent
         proxy_choice = get_random_proxy()
         ua_choice = get_random_user_agent()
-
-        # Round-robin approach: pass a list of proxies to jobspy
         proxies_list = [proxy_choice] 
         headers = {"User-Agent": ua_choice}
 
         try:
-            from jobspy import scrape_jobs
             jobs_df = scrape_jobs(
                 site_name=SITE_LIST,
                 search_term=keyword,
@@ -213,63 +217,64 @@ def scrape_and_store():
                 print(f"No jobs found for '{keyword}'")
                 continue
 
-            jobs_records = jobs_df.to_dict("records")
+            records = jobs_df.to_dict("records")
             now_utc = datetime.utcnow()
 
-            # Build sets for companies
-            company_set = set()
+            # set() for unique companies
+            companies_set = set()
             job_values = []
 
-            for job in jobs_records:
-                raw_title = job.get("title", None)
+            for job in records:
+                raw_title = job.get("title")
                 norm_title = normalize_title(raw_title)
+                
+                company_val = clean_company_name(job.get("company"))
+                date_posted_val = safe_timestamp(job.get("date_posted"))
 
-                # Clean or cast company name
-                company_val = clean_company_name(job.get("company", None))
-
-                # Clean or cast date_posted
-                date_posted_val = safe_timestamp(job.get("date_posted", None))
-
-                # Add to set for upserting companies
+                # add to set
                 if company_val:
-                    company_set.add(company_val)
+                    companies_set.add(company_val)
 
-                record_tuple = (
-                    job.get("site", None),
+                row = (
+                    job.get("site"),
                     raw_title,
                     norm_title,
                     company_val,
-                    job.get("location", None),
-                    job.get("description", None),
-                    job.get("job_type", None),
-                    job.get("interval", None),
-                    job.get("min_amount", None),
-                    job.get("max_amount", None),
-                    job.get("job_url", None),
+                    job.get("location"),
+                    job.get("description"),
+                    job.get("job_type"),
+                    job.get("interval"),
+                    job.get("min_amount"),
+                    job.get("max_amount"),
+                    job.get("job_url"),
                     date_posted_val,
                     now_utc
                 )
-                job_values.append(record_tuple)
+                job_values.append(row)
 
-            # --- Upsert Companies ---
-            for cname in company_set:
+            # -- UPSERT COMPANIES --
+            for cname in companies_set:
                 cursor.execute("""
                     INSERT INTO companies (company_name)
                     VALUES (%s)
                     ON CONFLICT (company_name) DO NOTHING;
                 """, (cname,))
 
-            # Retrieve their IDs
+            # fetch company IDs
             company_id_map = {}
-            if company_set:
-                placeholders = ",".join(["%s"] * len(company_set))
-                sql_comp = f"SELECT id, company_name FROM companies WHERE company_name IN ({placeholders});"
-                cursor.execute(sql_comp, tuple(company_set))
+            if companies_set:
+                placeholders = ",".join(["%s"]*len(companies_set))
+                sql = f"""
+                    SELECT id, company_name 
+                    FROM companies
+                    WHERE company_name IN ({placeholders})
+                """
+                cursor.execute(sql, tuple(companies_set))
                 results = cursor.fetchall()
                 company_id_map = {r[1]: r[0] for r in results}
 
-            # --- Upsert Jobs ---
-            insert_query = """
+            # -- UPSERT JOBS --
+            insert_sql = """
                 INSERT INTO jobs (
                     site, title, title_normalized, company_id,
                     location, description, job_type, interval,
@@ -309,29 +314,28 @@ def scrape_and_store():
             final_values = []
             for (
                 site, raw_title, norm_title, company_val,
-                location, description, job_type, interval_,
-                min_amount, max_amount, job_url, date_posted_val, scraped_at
+                loc, desc, job_type, interval_, min_amt, max_amt,
+                job_url, date_posted_val, scraped_at
             ) in job_values:
-
-                comp_id = company_id_map.get(company_val, None)
-                row = (
+                cid = company_id_map.get(company_val)
+                row2 = (
                     site,
                     raw_title,
                     norm_title,
-                    comp_id,
-                    location,
-                    description,
+                    cid,
+                    loc,
+                    desc,
                     job_type,
                     interval_,
-                    min_amount,
-                    max_amount,
+                    min_amt,
+                    max_amt,
                     job_url,
                     date_posted_val,
                     scraped_at
                 )
-                final_values.append(row)
+                final_values.append(row2)
 
-            execute_values(cursor, insert_query, final_values)
+            execute_values(cursor, insert_sql, final_values)
             print(f"Inserted/Updated {len(final_values)} records for '{keyword}'.")
 
         except Exception as e:
