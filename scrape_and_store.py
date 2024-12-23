@@ -102,7 +102,7 @@ def get_postgres_connection():
 # >>> IMPORTANT: If you want to omit Google due to timeouts/429, REMOVE "google" <<<
 SITE_LIST = ["indeed", "linkedin", "zip_recruiter", "glassdoor"]
 LOCATION = "USA"
-RESULTS_WANTED = 20
+RESULTS_WANTED = 1000000000
 HOURS_OLD = 72
 
 ##############################
