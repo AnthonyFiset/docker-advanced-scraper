@@ -1,2 +1,2 @@
-python-jobspy==0.2.3    # or whichever version you want
-psycopg2-binary==2.9.7
+python-jobspy   # or whichever version you want
+psycopg2-binary
